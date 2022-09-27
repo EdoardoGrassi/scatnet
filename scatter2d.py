@@ -12,7 +12,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Subset
 import torchvision
 
-from curet import Curet
+from curet.curet import Curet
 
 
 def plot_1st_order(scattering, fig: plt.Figure, ax: plt.Axes):

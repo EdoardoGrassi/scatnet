@@ -10,11 +10,12 @@ import torchmetrics
 from torch.nn import Module, CrossEntropyLoss
 from torch.optim import Optimizer
 from kymatio.torch import Scattering2D
+from torch.utils.data import Subset
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 
-from curet import Curet
+from curet.curet import Curet
 from scatnet import ScatNet2D
 
 
@@ -60,6 +61,8 @@ if __name__ == '__main__':
     MODEL_SAVE_PATH = Path(R"./.checkpoints/")
     assert MODEL_SAVE_PATH.is_dir()
 
+    CURET_CLASSES = [1, 2, 3]
+
     BATCH_SIZE = 128  # TODO: make customizable
 
     parser = argparse.ArgumentParser(
@@ -81,10 +84,10 @@ if __name__ == '__main__':
     # normalize = transforms.Normalize(
     #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     preprocessing = transforms.Compose([
-        transforms.CenterCrop(32),
+        transforms.CenterCrop(200),
         # transforms.Resize((32, 32)),
         # transforms.RandomCrop(32, 4),
-        # transforms.Grayscale(),
+        transforms.Grayscale(),
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
         transforms.ToTensor(),
@@ -95,6 +98,11 @@ if __name__ == '__main__':
     workers, pinning = (4, True) if device.type == 'cuda' else (None, False)
 
     dataset: Final = Curet(CURET_ROOT_PATH, transform=preprocessing)
+
+    # TODO: reduce dataset to include only textures with good view angles
+    indices = [i for i in range(CURET_SAMPLES_PER_CLASS * len(CURET_CLASSES))]
+    sampler: Final = Subset(dataset, indices)
+
     train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True,
                               num_workers=workers, pin_memory=pinning)
     test_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False,
@@ -114,8 +122,7 @@ if __name__ == '__main__':
 
     metric: Final = torchmetrics.Accuracy().to(device)
 
-    print(
-        f"Running with {args.classifier} classifier for {args.epochs} epochs")
+    print(f"Run with {args.classifier} classifier for {args.epochs} epochs")
 
     # recover last checkpoint
     checkpoint_filepath = MODEL_SAVE_PATH.joinpath(
@@ -132,7 +139,8 @@ if __name__ == '__main__':
             hparams = {"scat-coeff-order": order}
             w.add_hparams(hparams)
 
-            shape = (32, 32)
+            # as done in Mallat paper
+            shape = (200, 200)
             scattering = Scattering2D(J=J, shape=shape, max_order=order, backend='torch').to(device)
 
             for epoch in range(1, args.epochs + 1):

@@ -4,7 +4,7 @@ import torch.nn as nn
 
 class ScatNet2D(nn.Module):
     """
-        Simple CNN with 3x3 convs based on VGG
+    Simple CNN with 3x3 convs based on VGG
     """
 
     def __init__(self, in_channels: int, out_channels: int, classifier: Literal['cnn', 'mlp', 'lin']='cnn'):
