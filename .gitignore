@@ -1,3 +1,4 @@
 /.checkpoints
 /out
 **/__pycache__
+**/runs

@@ -1,4 +1,5 @@
 import argparse
+import math
 from pathlib import Path
 from typing import Final
 
@@ -10,12 +11,12 @@ import torchmetrics
 from torch.nn import Module, CrossEntropyLoss
 from torch.optim import Optimizer
 from kymatio.torch import Scattering2D
-from torch.utils.data import Subset
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 
-from curet.curet import Curet
+from curet.data import Curet
+from curet.utils import CuretSubset
 from scatnet import ScatNet2D
 
 
@@ -55,13 +56,11 @@ def test(model: Module, device: torch.device, loader: DataLoader, loss: CrossEnt
 
 
 if __name__ == '__main__':
-    CURET_ROOT_PATH = Path(R"C:/data/curet/data")
+    CURET_ROOT_PATH = Path(R"C:/data/curet/")
     assert CURET_ROOT_PATH.is_dir()
 
     MODEL_SAVE_PATH = Path(R"./.checkpoints/")
     assert MODEL_SAVE_PATH.is_dir()
-
-    CURET_CLASSES = [1, 2, 3]
 
     BATCH_SIZE = 128  # TODO: make customizable
 
@@ -83,25 +82,22 @@ if __name__ == '__main__':
 
     # normalize = transforms.Normalize(
     #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    preprocessing = transforms.Compose([
+    ts: Final = transforms.Compose([
         transforms.CenterCrop(200),
-        # transforms.Resize((32, 32)),
-        # transforms.RandomCrop(32, 4),
-        transforms.Grayscale(),
+        transforms.Grayscale(num_output_channels=1),
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
 
     workers, pinning = (4, True) if device.type == 'cuda' else (None, False)
 
-    dataset: Final = Curet(CURET_ROOT_PATH, transform=preprocessing)
+    MAX_V_ANGLE = math.radians(60)
+    MAX_H_ANGLE = math.radians(60)
 
-    # TODO: reduce dataset to include only textures with good view angles
-    indices = [i for i in range(CURET_SAMPLES_PER_CLASS * len(CURET_CLASSES))]
-    sampler: Final = Subset(dataset, indices)
+    curet: Final = Curet(CURET_ROOT_PATH, transform=ts)
+    dataset: Final = CuretSubset(curet, max_view_angles=[MAX_V_ANGLE, MAX_H_ANGLE])
 
     train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True,
                               num_workers=workers, pin_memory=pinning)
@@ -109,10 +105,8 @@ if __name__ == '__main__':
                              num_workers=workers, pin_memory=pinning)
     print(f"Loaded CURET dataset {dataset}")
 
-    inputs, outputs = K, len(dataset.classes)
-
-    model: Final = ScatNet2D(
-        inputs, outputs, classifier=args.classifier).to(device)
+    inputs, outputs = K, len(curet.classes)
+    model: Final = ScatNet2D(inputs, outputs, args.classifier).to(device)
 
     criterion: Final = CrossEntropyLoss(reduction='sum')
     optimizer: Final = torch.optim.SGD(
@@ -125,25 +119,23 @@ if __name__ == '__main__':
     print(f"Run with {args.classifier} classifier for {args.epochs} epochs")
 
     # recover last checkpoint
-    checkpoint_filepath = MODEL_SAVE_PATH.joinpath(
-        args.classifier).with_suffix(".pth")
-    if checkpoint_filepath.exists():
-        print(f"Loading last checkpoint from {checkpoint_filepath.resolve()}")
-        checkpoint: Final = torch.load(checkpoint_filepath)
+    check_point_path: Final = MODEL_SAVE_PATH.joinpath(args.classifier).with_suffix(".pth")
+    if check_point_path.exists():
+        print(f"Loading last checkpoint from {check_point_path.resolve()}")
+        checkpoint: Final = torch.load(check_point_path)
         model.load_state_dict(checkpoint['model_state_dict'])
     else:
         print("No checkpoint found")
 
     with SummaryWriter() as w:
         for order in (1, 2):
-            hparams = {"scat-coeff-order": order}
-            w.add_hparams(hparams)
 
             # as done in Mallat paper
             shape = (200, 200)
-            scattering = Scattering2D(J=J, shape=shape, max_order=order, backend='torch').to(device)
+            scattering = Scattering2D(
+                J=J, shape=shape, max_order=order, backend='torch').to(device)
 
-            for epoch in range(1, args.epochs + 1):
+            for epoch in range(args.epochs):
                 # _ = train(model, device, train_loader, optimizer, criterion, scattering)
                 # test(model, device, test_loader, criterion, scattering)
                 # scheduler.step()
@@ -161,8 +153,7 @@ if __name__ == '__main__':
                     optimizer.step()
 
                     acc = metric(output, target)
-                    print(
-                        f"Batch {i:3}:\taccuracy: {acc:.6f}\tloss: {loss:.6f}")
+                    print(f"Batch {i:3}:\taccuracy: {acc:.6f}\tloss: {loss:.6f}")
 
                     # if batch_idx % 3 == 0:
                     #     print('Train Epoch: {} [{}/{} ({:.0f}%)]\t\tLoss: {:.6f}'.format(
@@ -199,6 +190,10 @@ if __name__ == '__main__':
 
                 w.add_scalar('loss/test', test_loss, global_step=epoch)
                 w.add_scalar('accuracy/test', test_acc, global_step=epoch)
+
+            hparams = {"scat-coeff-order": order}
+            metrics = {"loss/test": 0}
+            w.add_hparams(hparamas_dict=hparams, metrics_dict=metrics)
 
             model.eval()
             with torch.no_grad():

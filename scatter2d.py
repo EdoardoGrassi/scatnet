@@ -8,11 +8,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from kymatio import Scattering2D
 from matplotlib import gridspec
-from PIL import Image
 from torch.utils.data import DataLoader, Subset
 import torchvision
 
-from curet.curet import Curet
+from curet.data import Curet
 
 
 def plot_1st_order(scattering, fig: plt.Figure, ax: plt.Axes):
