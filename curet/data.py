@@ -1,6 +1,6 @@
 import io
-from pathlib import Path
 import shutil
+from pathlib import Path
 from typing import Callable, Final, Generator, Iterable, Optional
 from urllib import request
 from zipfile import ZipFile
@@ -10,10 +10,12 @@ import torch
 import torchvision
 import unlzw3
 import urllib3
-from PIL import Image
+from PIL import Image, ImageFile, UnidentifiedImageError
 
-from ._view_and_lumi import *
+from ._data import *
 
+# solves "image file is trucated" error with PIL library
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 # NOTE: index starts from 1
@@ -29,6 +31,7 @@ SAMPLE_STD: Final = torch.tensor([0.35, 0.35, 0.35])
 
 SAMPLE_AVG_GRAYSCALE: Final = 0.5
 SAMPLE_STD_GRAYSCALE: Final = 0.3
+
 
 def curet_meta_table():
     return CURET_VIEW_AND_LUMI
@@ -144,21 +147,35 @@ class Curet(torchvision.datasets.DatasetFolder):
             raise RuntimeError(f"Cannot locate {dir}")
 
 
-
 class SimpleCuret(torchvision.datasets.ImageFolder):
+    """
+    CUReT: Columbia-Utrecht Reflectance and Texture Database
+
+    See:
+        https://www.cs.columbia.edu/CAVE/software/curet/index.php
+    """
+
+    class _Loader:
+        def __call__(self, path: str):
+            try:
+                extracted = io.BytesIO(unlzw3.unlzw(Path(path).read_bytes()))
+                return Image.open(extracted).convert('RGB')
+            except UnidentifiedImageError as e:
+                raise RuntimeError(f"Cannot load {path}") from e
+
+    class _Checker:
+        def __call__(self, path: str):
+            return path.endswith(".bmp.Z")
+
     def __init__(self,
-            root: str,
-            transform: Optional[Callable] = None,
-            target_transform: Optional[Callable] = None):
+                 root: str,
+                 transform: Optional[Callable] = None,
+                 target_transform: Optional[Callable] = None):
 
-        super().__init__(root, transform, target_transform, self.__loader, self.__validate)
-
-    def __loader(self, path: str):
-        extracted = io.BytesIO(unlzw3.unlzw(Path(path).read_bytes()))
-        return Image.open(extracted).convert('RGB')
-
-    def __validate(self, path: str):
-        return Path(path).suffix == ".Z"
+        # NOTE: lambdas cause problems with torch multithreading
+        loader = self._Loader()
+        checker = self._Checker()
+        super().__init__(root, transform, target_transform, loader, checker)
 
 
 def mean_and_std(dataset: Curet):
@@ -174,7 +191,8 @@ def mean_and_std(dataset: Curet):
         var += image.var(dim=[1, 2])
 
         if i % 100 == 0:
-            print("Processed {}/{} ({:2}%)".format(i, len(dataset), i / len(dataset) * 100))
+            print("Processed {}/{} ({:2}%)".format(i,
+                  len(dataset), i / len(dataset) * 100))
 
     avg = avg / len(dataset)
     std = torch.sqrt(var / len(dataset))

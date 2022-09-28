@@ -1,4 +1,5 @@
 import argparse
+import io
 import math
 from pathlib import Path
 from typing import Final, cast
@@ -8,9 +9,9 @@ import torch
 import torch.nn.functional as F
 import torch.optim
 import torchmetrics
-from torch.nn import Module, CrossEntropyLoss
-from torch.optim import Optimizer
 from kymatio.torch import Scattering2D
+from torch.nn import CrossEntropyLoss
+from torch.optim import Optimizer
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
@@ -18,7 +19,6 @@ from torchvision import transforms
 from curet.data import SimpleCuret
 from curet.utils import CuretSubset
 from scatnet import LinearSVM, ScatNet2D
-
 
 
 def main():
@@ -63,20 +63,19 @@ def main():
 
     # TODO: use multiple workers after concurrency bug is fixed
     workers, pinning = (4, True) if device.type == 'cuda' else (None, False)
-    print(f"Running on {device} device")
+    print(f"Device: {device}")
 
     MAX_V_ANGLE = math.radians(60)
     MAX_H_ANGLE = math.radians(60)
 
     curet: Final = SimpleCuret(CURET_ROOT_PATH, transform=ts)
-    # dataset: Final = CuretSubset(curet, max_view_angles=[
-    #                              MAX_V_ANGLE, MAX_H_ANGLE])
+    dataset: Final = CuretSubset(curet, max_view_angles=[MAX_V_ANGLE, MAX_H_ANGLE])
 
-    train_loader = DataLoader(curet, batch_size=BATCH_SIZE, shuffle=True,
+    train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True,
                               num_workers=workers, pin_memory=pinning)
-    test_loader = train_loader
-    # test_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False,
-    #                          num_workers=workers, pin_memory=pinning)
+    test_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False,
+                             num_workers=workers, pin_memory=pinning)
+    print(f"Dataset: CURET with {len(curet.classes)} classes")
 
     inputs, outputs = K * SCAT_M_O * SCAT_N_O, len(curet.classes)
     # model: Final = ScatNet2D(inputs, outputs, args.classifier).to(device)
@@ -90,7 +89,8 @@ def main():
 
     metric: Final = torchmetrics.Accuracy().to(device)
 
-    print(f"Run with {args.classifier} classifier for {args.epochs} epochs")
+    print(f"Classifier: {args.classifier}")
+    print(f"Training for {args.epochs} epochs with batch size {BATCH_SIZE}")
 
     # recover last checkpoint
     check_point_path: Final = MODEL_SAVE_PATH.joinpath(
@@ -102,6 +102,9 @@ def main():
     else:
         print("No checkpoint found")
 
+    baseloss: Final = torchmetrics.HingeLoss().to(device)
+    accuracy: Final = torchmetrics.Accuracy().to(device)
+    all_test_metrics: Final[torchmetrics.Metric] = [baseloss, accuracy]
     with SummaryWriter() as w:
         for order in (1, 2):
 
@@ -109,9 +112,7 @@ def main():
                 J=J, shape=(SCAT_M_I, SCAT_N_I), max_order=order, backend='torch').to(device)
 
             for epoch in range(args.epochs):
-                # _ = train(model, device, train_loader, optimizer, criterion, scattering)
-                # test(model, device, test_loader, criterion, scattering)
-
+                print()
                 print(f"Training epoch {epoch}")
 
                 model.train()
@@ -121,54 +122,37 @@ def main():
 
                     coeffs = cast(torch.Tensor, scattering(data))
                     coeffs = coeffs.view(coeffs.size(0), -1)
-                    output = model(coeffs)
-                    # loss = criterion(output, target)
-                    loss = F.cross_entropy(output, target)
-                    loss.backward()
+                    predis = model(coeffs)
+                    predis = criterion.forward(predis, target)
+                    predis.backward()
                     optimizer.step()
 
-                    acc = metric(output, target)
-                    print(
-                        f"Batch {i:3}:\taccuracy: {acc:.6f}\tloss: {loss:.6f}")
+                    acc = metric(predis, target)
+                    print(f"Batch {i}: accuracy={acc:.2f} loss={predis:.6f}")
 
-                    # if batch_idx % 3 == 0:
-                    #     print('Train Epoch: {} [{}/{} ({:.0f}%)]\t\tLoss: {:.6f}'.format(
-                    #         epoch, batch_idx *
-                    #         len(data), len(train_loader.dataset),
-                    #         100. * batch_idx / len(train_loader), loss.item()))
-
-                    w.add_scalar('loss/train', loss.item(), global_step=epoch)
+                    w.add_scalar('loss/train', predis.item(), global_step=epoch)
                     w.add_scalar('accuracy/train', acc, global_step=epoch)
 
                 model.eval()
-                loss = 0
-                correct = 0
-                test_metric = torchmetrics.Accuracy().to(device)
+                for m in all_test_metrics:
+                    m.reset()
                 with torch.no_grad():
                     for data, target in test_loader:
                         data, target = data.to(device), target.to(device)
 
                         coeffs = cast(torch.Tensor, scattering(data))
                         coeffs = coeffs.view(coeffs.size(0), -1)
-                        output = model(coeffs)
-                        # sum up batch loss
-                        loss += criterion(output, target).item()
-                        # get the index of the max log-probability
-                        pred = output.max(1, keepdim=True)[1]
-                        correct += pred.eq(target.view_as(pred)).sum().item()
-                        test_metric.update(output, target)
+                        predis = model(coeffs)
 
-                test_loss = loss / len(test_loader.dataset)
-                test_accuracy = correct / len(test_loader.dataset)
-                # print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
-                #     test_loss, correct, len(test_loader.dataset),
-                #     100. * correct / len(test_loader.dataset)))
+                        for m in all_test_metrics:
+                            m.update(predis, target)
 
-                test_acc = test_metric.compute()
-                print(f"Eval:\taccuracy {test_acc:.6f}\tloss: {loss:.6f}")
+                loss = baseloss.compute()
+                acc = accuracy.compute()
+                print(f"Eval: accuracy={acc:.2f} loss={loss:.6f}")
 
-                w.add_scalar('loss/test', test_loss, global_step=epoch)
-                w.add_scalar('accuracy/test', test_acc, global_step=epoch)
+                w.add_scalar('loss/test', baseloss, global_step=epoch)
+                w.add_scalar('accuracy/test', acc, global_step=epoch)
 
                 scheduler.step()
 

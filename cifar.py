@@ -64,7 +64,6 @@ def train(model, device, train_loader, optimizer, epoch, scattering):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         coeffs = scattering(data)
-        print("data:", data.shape, "coeffs:", coeffs.shape, "label:", target.shape)
         output = model(coeffs)
         loss = F.cross_entropy(output, target)
         loss.backward()

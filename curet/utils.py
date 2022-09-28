@@ -15,6 +15,7 @@ class CuretSubset(torch.utils.data.Subset):
         visible: Final = lambda x: abs(x) <= max_view_angles[1]
         samples: Final = [i for i in range(1, SAMPLES_PER_CLASS + 1) \
                             if visible(view_and_lumi[i][1])]
-        indices: Final = [s + i * len(CLASSES) for s in samples for i in range(len(CLASSES))]
+        nclasses = len(dataset.classes)
+        indices: Final = [s + i * nclasses for s in samples for i in range(nclasses)]
 
         super().__init__(dataset, indices)
