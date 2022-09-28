@@ -1,7 +1,7 @@
 import argparse
 import math
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import seaborn
 import torch
@@ -15,47 +15,13 @@ from torch.utils.data.dataloader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 
-from curet.data import Curet
+from curet.data import SimpleCuret
 from curet.utils import CuretSubset
-from scatnet import ScatNet2D
+from scatnet import LinearSVM, ScatNet2D
 
 
-def train(model: Module, device: torch.device, loader: DataLoader, opt: Optimizer, loss, scattering):
-    model.train()
-    for batch_idx, (data, target) in enumerate(loader):
-        data, target = data.to(device), target.to(device)
-        opt.zero_grad()
-        output = model(scattering(data))
-        #loss = F.cross_entropy(output, target)
-        scores = loss(output, target)
-        scores.backward()
-        opt.step()
 
-    return scores
-
-
-def test(model: Module, device: torch.device, loader: DataLoader, loss: CrossEntropyLoss, scattering):
-    model.eval()
-    grads = 0
-    correct = 0
-    with torch.no_grad():
-        for data, target in loader:
-            data, target = data.to(device), target.to(device)
-            output = model(scattering(data))
-            # sum up batch loss
-            # grads += F.cross_entropy(output, target, reduction='sum').item()
-            grads += loss(output, target, reduction='sum').item()
-            # get the index of the max log-probability
-            pred = output.max(1, keepdim=True)[1]
-            correct += pred.eq(target.view_as(pred)).sum().item()
-
-    grads /= len(loader.dataset)
-    perc = 100. * correct / len(loader.dataset)
-    print(
-        f'\nTest set: Average loss: {grads:.4f}, Accuracy: {correct}/{len(loader.dataset)} ({perc:.2f}%)\n')
-
-
-if __name__ == '__main__':
+def main():
     CURET_ROOT_PATH = Path(R"C:/data/curet/")
     assert CURET_ROOT_PATH.is_dir()
 
@@ -78,7 +44,11 @@ if __name__ == '__main__':
         'cuda' if torch.cuda.is_available() else 'cpu')
 
     J = 2
-    K = {1: 17 * 3, 2: 81 * 3}[args.mode]
+    K = {1: 17, 2: 81}[args.mode]
+
+    # spatial support size for input images, as done in Mallat paper
+    SCAT_M_I, SCAT_N_I = 200, 200
+    SCAT_M_O, SCAT_N_O = SCAT_M_I // (2 ** J), SCAT_N_I // (2 ** J)
 
     # normalize = transforms.Normalize(
     #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -91,22 +61,26 @@ if __name__ == '__main__':
         transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
 
+    # TODO: use multiple workers after concurrency bug is fixed
     workers, pinning = (4, True) if device.type == 'cuda' else (None, False)
+    print(f"Running on {device} device")
 
     MAX_V_ANGLE = math.radians(60)
     MAX_H_ANGLE = math.radians(60)
 
-    curet: Final = Curet(CURET_ROOT_PATH, transform=ts)
-    dataset: Final = CuretSubset(curet, max_view_angles=[MAX_V_ANGLE, MAX_H_ANGLE])
+    curet: Final = SimpleCuret(CURET_ROOT_PATH, transform=ts)
+    # dataset: Final = CuretSubset(curet, max_view_angles=[
+    #                              MAX_V_ANGLE, MAX_H_ANGLE])
 
-    train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True,
+    train_loader = DataLoader(curet, batch_size=BATCH_SIZE, shuffle=True,
                               num_workers=workers, pin_memory=pinning)
-    test_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False,
-                             num_workers=workers, pin_memory=pinning)
-    print(f"Loaded CURET dataset {dataset}")
+    test_loader = train_loader
+    # test_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False,
+    #                          num_workers=workers, pin_memory=pinning)
 
-    inputs, outputs = K, len(curet.classes)
-    model: Final = ScatNet2D(inputs, outputs, args.classifier).to(device)
+    inputs, outputs = K * SCAT_M_O * SCAT_N_O, len(curet.classes)
+    # model: Final = ScatNet2D(inputs, outputs, args.classifier).to(device)
+    model: Final = LinearSVM(inputs, outputs).to(device)
 
     criterion: Final = CrossEntropyLoss(reduction='sum')
     optimizer: Final = torch.optim.SGD(
@@ -119,7 +93,8 @@ if __name__ == '__main__':
     print(f"Run with {args.classifier} classifier for {args.epochs} epochs")
 
     # recover last checkpoint
-    check_point_path: Final = MODEL_SAVE_PATH.joinpath(args.classifier).with_suffix(".pth")
+    check_point_path: Final = MODEL_SAVE_PATH.joinpath(
+        args.classifier).with_suffix(".pth")
     if check_point_path.exists():
         print(f"Loading last checkpoint from {check_point_path.resolve()}")
         checkpoint: Final = torch.load(check_point_path)
@@ -130,15 +105,12 @@ if __name__ == '__main__':
     with SummaryWriter() as w:
         for order in (1, 2):
 
-            # as done in Mallat paper
-            shape = (200, 200)
-            scattering = Scattering2D(
-                J=J, shape=shape, max_order=order, backend='torch').to(device)
+            scattering: Final = Scattering2D(
+                J=J, shape=(SCAT_M_I, SCAT_N_I), max_order=order, backend='torch').to(device)
 
             for epoch in range(args.epochs):
                 # _ = train(model, device, train_loader, optimizer, criterion, scattering)
                 # test(model, device, test_loader, criterion, scattering)
-                # scheduler.step()
 
                 print(f"Training epoch {epoch}")
 
@@ -146,14 +118,18 @@ if __name__ == '__main__':
                 for i, (data, target) in enumerate(train_loader):
                     data, target = data.to(device), target.to(device)
                     optimizer.zero_grad()
-                    output = model(scattering(data))
+
+                    coeffs = cast(torch.Tensor, scattering(data))
+                    coeffs = coeffs.view(coeffs.size(0), -1)
+                    output = model(coeffs)
                     # loss = criterion(output, target)
                     loss = F.cross_entropy(output, target)
                     loss.backward()
                     optimizer.step()
 
                     acc = metric(output, target)
-                    print(f"Batch {i:3}:\taccuracy: {acc:.6f}\tloss: {loss:.6f}")
+                    print(
+                        f"Batch {i:3}:\taccuracy: {acc:.6f}\tloss: {loss:.6f}")
 
                     # if batch_idx % 3 == 0:
                     #     print('Train Epoch: {} [{}/{} ({:.0f}%)]\t\tLoss: {:.6f}'.format(
@@ -171,7 +147,10 @@ if __name__ == '__main__':
                 with torch.no_grad():
                     for data, target in test_loader:
                         data, target = data.to(device), target.to(device)
-                        output = model(scattering(data))
+
+                        coeffs = cast(torch.Tensor, scattering(data))
+                        coeffs = coeffs.view(coeffs.size(0), -1)
+                        output = model(coeffs)
                         # sum up batch loss
                         loss += criterion(output, target).item()
                         # get the index of the max log-probability
@@ -191,6 +170,8 @@ if __name__ == '__main__':
                 w.add_scalar('loss/test', test_loss, global_step=epoch)
                 w.add_scalar('accuracy/test', test_acc, global_step=epoch)
 
+                scheduler.step()
+
             hparams = {"scat-coeff-order": order}
             metrics = {"loss/test": 0}
             w.add_hparams(hparamas_dict=hparams, metrics_dict=metrics)
@@ -209,3 +190,7 @@ if __name__ == '__main__':
                 img = seaborn.heatmap(mat).get_figure()
                 # TODO: add matrix to tensorboard output
                 # w.add_image("confmat", img)
+
+
+if __name__ == '__main__':
+    main()

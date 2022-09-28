@@ -1,15 +1,16 @@
 import itertools
+import math
 from pathlib import Path
 from typing import Final
-import math
 
 import matplotlib.pyplot as plt
 import torchvision.transforms
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 
-from curet.data import Curet, curet_meta_table, CLASSES, SAMPLES_PER_CLASS
+from curet.data import Curet, SimpleCuret
 
-if __name__ == "__main__":
+
+def main():
     USE_ONLY_CLASSES = list(range(1, 10 + 1))
 
     root: Final = Path(R"C:/data/curet/")
@@ -21,23 +22,13 @@ if __name__ == "__main__":
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
-    curet: Final = Curet(root=root, classes=USE_ONLY_CLASSES, download=True, transform=ts)
-    loader: Final = DataLoader(curet, batch_size=4, shuffle=True)
+    # curet: Final = Curet(root=root, classes=USE_ONLY_CLASSES, download=True, transform=ts)
+    curet: Final = SimpleCuret(root=root, transform=ts)
+    loader: Final = DataLoader(curet, batch_size=4, shuffle=True, num_workers=0)
 
     # filter by view angle
     MAX_H_ANGLE, R_ = math.radians(60), math.radians(-60)
     # MAX_V_ANGLE = math.radians(60)
-
-    view_and_lumi = curet_meta_table()
-
-    visible: Final = lambda x: abs(x) <= MAX_H_ANGLE # or abs(x) >= 
-    samples: Final = [i for i in range(1, SAMPLES_PER_CLASS + 1) \
-                        if visible(view_and_lumi[i][1])]
-    indices: Final = [i for i in range(SAMPLES_PER_CLASS * len(CLASSES))]
-    sampler: Final = Subset(curet, indices)
-
-    print("Selected samples:", *samples)
-    print("Count:", len(samples))
 
     # preview some of the images
     idx_to_class = { idx: cls for cls, idx in curet.class_to_idx.items() }
@@ -53,3 +44,6 @@ if __name__ == "__main__":
 
     # mean, std = mean_and_std(curet)
     # print(f"mean = {mean}, std = {std}")
+
+if __name__ == "__main__":
+    main()

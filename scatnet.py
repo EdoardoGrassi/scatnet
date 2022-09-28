@@ -1,4 +1,5 @@
 from typing import Literal
+import torch
 import torch.nn as nn
 
 
@@ -48,10 +49,22 @@ class ScatNet2D(nn.Module):
             self.classifier = nn.Linear(self.K * 8 * 8, self.__out_channels)
             self.features = None
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
         x = self.bn(x.view(-1, self.K, 8, 8))
         if self.features:
             x = self.features(x)
         x = x.view(x.size(0), -1)
         x = self.classifier(x)
         return x
+
+
+class LinearSVM(torch.nn.Module):
+    
+    def __init__(self, in_features: int, out_features: int) -> None:
+        assert all(i > 0 for i in (in_features, out_features))
+
+        super().__init__()
+        self.__classifier = nn.Linear(in_features, out_features)
+
+    def forward(self, x: torch.Tensor):
+        return self.__classifier(x)

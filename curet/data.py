@@ -143,6 +143,24 @@ class Curet(torchvision.datasets.DatasetFolder):
         if not (dir := self.__root.joinpath(_class_to_dir(cls))).is_dir():
             raise RuntimeError(f"Cannot locate {dir}")
 
+
+
+class SimpleCuret(torchvision.datasets.ImageFolder):
+    def __init__(self,
+            root: str,
+            transform: Optional[Callable] = None,
+            target_transform: Optional[Callable] = None):
+
+        super().__init__(root, transform, target_transform, self.__loader, self.__validate)
+
+    def __loader(self, path: str):
+        extracted = io.BytesIO(unlzw3.unlzw(Path(path).read_bytes()))
+        return Image.open(extracted).convert('RGB')
+
+    def __validate(self, path: str):
+        return Path(path).suffix == ".Z"
+
+
 def mean_and_std(dataset: Curet):
     assert dataset is not None
 
