@@ -13,6 +13,7 @@ import urllib3
 from PIL import Image, ImageFile, UnidentifiedImageError
 
 from ._data import *
+from ._labels import CURET_INDEX_TO_LABELS
 
 # solves "image file is trucated" error with PIL library
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -33,11 +34,33 @@ SAMPLE_AVG_GRAYSCALE: Final = 0.5
 SAMPLE_STD_GRAYSCALE: Final = 0.3
 
 
+def _retrieve_remote_data(url: str, dst: Path):
+    assert url is not None
+    assert dst.id_dir()
+
+    print(f"Downloading data from {url}")
+    encoded_archive_path, _ = request.urlretrieve(url)
+    decoded_archive_path = dst
+
+    # extract folder
+    print(f"Extracting data to {decoded_archive_path}")
+    with ZipFile(encoded_archive_path, "r") as archive:
+        archive.extractall(path=decoded_archive_path)
+
+    print(f"Decoding samples")
+    for encoded_sample in decoded_archive_path.glob("*.bmp.Z"):
+        # remove trailing .Z
+        print(f"Decoding {encoded_sample}")
+        decoded_sample = encoded_sample.with_suffix("")
+        decoded_sample.write_bytes(
+                unlzw3.unlzw(encoded_sample.read_bytes()))
+
+
 def curet_meta_table():
     return CURET_VIEW_AND_LUMI
 
 
-def compile_curet_dataset(src: Path, dst: Path):
+def _extract_curet_images(src: Path, dst: Path):
     assert src.is_dir(), f"Path {src.resolve()} is not a directory"
 
     def decompress(encoded: Path, decoded: Path):
@@ -77,15 +100,17 @@ def _class_to_dir(index: int):
 class Curet(torchvision.datasets.DatasetFolder):
     def __init__(self,
                  root: str,
-                 classes: Optional[Iterable[int]] = None,
+                 classes: Optional[Iterable[int]] = list(CLASSES),
                  download: Optional[bool] = False,
                  transform: Optional[Callable] = None,
                  target_transform: Optional[Callable] = None,
                  ) -> None:
 
+        for c in classes:
+            assert c in CURET_INDEX_TO_LABELS
+
         self.__root: Final = Path(root)
-        self.__classes: Final[list[int]] = list(set(classes)) if classes is not None \
-            else list(CLASSES)
+        self.__classes: Final[list[int]] = list(set(classes))
 
         # download any missing class
         if download:
@@ -122,26 +147,6 @@ class Curet(torchvision.datasets.DatasetFolder):
         extracted = io.BytesIO(unlzw3.unlzw(Path(path).read_bytes()))
         return Image.open(extracted).convert('RGB')
 
-    def __retrieve_remote_data(self, url: str):
-        assert url is not None
-
-        print(f"Downloading data from {url}")
-        encoded_archive_path, _ = request.urlretrieve(url)
-        decoded_archive_path = self.__root
-
-        # extract folder
-        print(f"Extracting data to {decoded_archive_path}")
-        with ZipFile(encoded_archive_path, "r") as archive:
-            archive.extractall(path=decoded_archive_path)
-
-        print(f"Decoding samples")
-        for encoded_sample in decoded_archive_path.glob("*.bmp.Z"):
-            # remove trailing .Z
-            print(f"Decoding {encoded_sample}")
-            decoded_sample = encoded_sample.with_suffix("")
-            decoded_sample.write_bytes(
-                unlzw3.unlzw(encoded_sample.read_bytes()))
-
     def __validate_class_folder(self, cls: int):
         if not (dir := self.__root.joinpath(_class_to_dir(cls))).is_dir():
             raise RuntimeError(f"Cannot locate {dir}")
@@ -170,11 +175,30 @@ class SimpleCuret(torchvision.datasets.ImageFolder):
     def __init__(self,
                  root: str,
                  transform: Optional[Callable] = None,
-                 target_transform: Optional[Callable] = None):
+                 target_transform: Optional[Callable] = None,
+                 download: Optional[bool] = False):
 
         # NOTE: lambdas cause problems with torch multithreading
         loader = self._Loader()
         checker = self._Checker()
+
+        # download any missing 'sampleXX' folder
+        if download:
+            for cls in CURET_INDEX_TO_LABELS.values():
+                dir = Path(root).joinpath(_class_to_dir(cls))
+                if dir.exists():
+                    print(f"Found folder {dir}")
+                    if not len(list(dir.glob("*.Z"))) != SAMPLES_PER_CLASS:
+                        pass
+                else:
+                    print(f"Missing folder {dir}")
+                    url = _class_to_url(cls)
+                    _retrieve_remote_data(url)
+
+                # remove extra metadata
+                if (xvpics := dir.joinpath(".xvpics/")).exists():
+                    shutil.rmtree(xvpics)
+
         super().__init__(root, transform, target_transform, loader, checker)
 
 

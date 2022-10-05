@@ -1,34 +1,52 @@
 import argparse
-import io
 import math
 from pathlib import Path
 from typing import Final, cast
 
 import seaborn
 import torch
-import torch.nn.functional as F
 import torch.optim
+import torch.utils.data
 import torchmetrics
 from kymatio.torch import Scattering2D
 from torch.nn import CrossEntropyLoss
-from torch.optim import Optimizer
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 
-from curet.data import SimpleCuret
-from curet.utils import CuretSubset
-from scatnet import LinearSVM, ScatNet2D
+from curet.data import SimpleCuret, SAMPLES_PER_CLASS, curet_meta_table
+from curet.utils import CuretViewSubset, CuretClassSubset
+from scatnet import LinearSVM
+
+
+CURET_ROOT_PATH = Path(R"C:/data/curet/")
+assert CURET_ROOT_PATH.is_dir()
+
+MODEL_SAVE_PATH = Path(R"./.checkpoints/")
+assert MODEL_SAVE_PATH.is_dir()
+
+
+def check_point_path(classifier: str, order: int) -> Path:
+    return MODEL_SAVE_PATH.joinpath(f"model_{classifier}_order_{order}.pth")
+
+
+def load_model_params(path: Path, model: torch.nn.Module):
+    if path.exists():
+        print(f"Loading last checkpoint from {path}")
+        checkpoint: Final = torch.load(path)
+        model.load_state_dict(checkpoint) # checkpoint['model_state_dict'])
+    else:
+        print("No checkpoint found")
+
+
+def save_model_params(path: Path, model: torch.nn.Module):
+    print(f"Saving last checkpoint to {path}")
+    torch.save(model.state_dict(), str(path))
 
 
 def main():
-    CURET_ROOT_PATH = Path(R"C:/data/curet/")
-    assert CURET_ROOT_PATH.is_dir()
-
-    MODEL_SAVE_PATH = Path(R"./.checkpoints/")
-    assert MODEL_SAVE_PATH.is_dir()
-
     BATCH_SIZE = 128  # TODO: make customizable
+    CLASSES = [x for x in range(10)]
 
     parser = argparse.ArgumentParser(
         description='CURET scattering  + hybrid examples')
@@ -39,12 +57,12 @@ def main():
     parser.add_argument('--classifier', type=str, default='cnn', choices=('cnn', 'mlp', 'lin'),
                         help='classifier model')
     args: Final = parser.parse_args()
+    epochs: Final = cast(int, args.epochs)
 
     device: Final = torch.device(
         'cuda' if torch.cuda.is_available() else 'cpu')
 
     J = 2
-    K = {1: 17, 2: 81}[args.mode]
 
     # spatial support size for input images, as done in Mallat paper
     SCAT_M_I, SCAT_N_I = 200, 200
@@ -65,110 +83,130 @@ def main():
     workers, pinning = (4, True) if device.type == 'cuda' else (None, False)
     print(f"Device: {device}")
 
-    MAX_V_ANGLE = math.radians(60)
-    MAX_H_ANGLE = math.radians(60)
+    max_view_angles = (math.radians(360), math.radians(60))
 
     curet: Final = SimpleCuret(CURET_ROOT_PATH, transform=ts)
-    dataset: Final = CuretSubset(curet, max_view_angles=[MAX_V_ANGLE, MAX_H_ANGLE])
+    # dataset: Final = CuretViewSubset(curet, max_view_angles=max_view_angles)
+    # dataset: Final = CuretClassSubset(curet, classes=[x for x in range(20)])
 
-    train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True,
-                              num_workers=workers, pin_memory=pinning)
-    test_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False,
-                             num_workers=workers, pin_memory=pinning)
-    print(f"Dataset: CURET with {len(curet.classes)} classes")
+    view_and_lumi: Final = curet_meta_table()
 
-    inputs, outputs = K * SCAT_M_O * SCAT_N_O, len(curet.classes)
-    # model: Final = ScatNet2D(inputs, outputs, args.classifier).to(device)
-    model: Final = LinearSVM(inputs, outputs).to(device)
+    # TODO: check correctness of angle range check
+    visible: Final = lambda x: abs(x) <= max_view_angles[1]
+    samples: Final = [i for i in range(1, SAMPLES_PER_CLASS + 1)
+                      if visible(view_and_lumi[i][1])]
 
-    criterion: Final = CrossEntropyLoss(reduction='sum')
-    optimizer: Final = torch.optim.SGD(
-        model.parameters(), lr=0.1, momentum=0.9, weight_decay=0.0005)
-    scheduler: Final = torch.optim.lr_scheduler.ExponentialLR(
-        optimizer, gamma=0.9)
+    numclasses = len(curet.classes)
+    indices = [s + i * numclasses for s in samples for i in CLASSES]
+    dataset: Final = torch.utils.data.Subset(curet, indices)
 
-    metric: Final = torchmetrics.Accuracy().to(device)
+    print("Dataset: CURET with {} classes, {} samples"
+          .format(len(CLASSES), len(indices)))
+
+    # fixed generator seed for reproducible results
+    rng: Final = torch.Generator().manual_seed(0)
+    valid_set_size = int(0.8 * len(dataset))
+    train_set_size = len(dataset) - valid_set_size
+    datasets: Final = torch.utils.data.random_split(
+        dataset, [train_set_size, valid_set_size], generator=rng)
+
+    loaders: Final = [DataLoader(x, batch_size=BATCH_SIZE, shuffle=shuffle,
+                                 num_workers=workers, pin_memory=pinning)
+                      for x, shuffle in zip(datasets, [True, False])]
 
     print(f"Classifier: {args.classifier}")
-    print(f"Training for {args.epochs} epochs with batch size {BATCH_SIZE}")
+    print(f"Training for {epochs} epochs with batch size {BATCH_SIZE}")
 
-    # recover last checkpoint
-    check_point_path: Final = MODEL_SAVE_PATH.joinpath(
-        args.classifier).with_suffix(".pth")
-    if check_point_path.exists():
-        print(f"Loading last checkpoint from {check_point_path.resolve()}")
-        checkpoint: Final = torch.load(check_point_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        print("No checkpoint found")
+
+    train_accuracy: Final = torchmetrics.Accuracy().to(device)
 
     baseloss: Final = torchmetrics.HingeLoss().to(device)
     accuracy: Final = torchmetrics.Accuracy().to(device)
-    all_test_metrics: Final[torchmetrics.Metric] = [baseloss, accuracy]
+    metrics: Final[list[torchmetrics.Metric]] = [baseloss, accuracy]
     with SummaryWriter() as w:
         for order in (1, 2):
+            cppath: Final = check_point_path("svm", order)
 
+            print(f"Running with scatter coefficients order={order}")
+            K = {1: 17, 2: 81}[order]
+
+            inputs, outputs = K * SCAT_M_O * SCAT_N_O, len(curet.classes)
+            # model: Final = ScatNet2D(inputs, outputs, args.classifier).to(device)
+            classifier: Final = LinearSVM(inputs, outputs).to(device)
+
+            shape = (SCAT_M_I, SCAT_N_I)
             scattering: Final = Scattering2D(
-                J=J, shape=(SCAT_M_I, SCAT_N_I), max_order=order, backend='torch').to(device)
+                J=J, shape=shape, max_order=order, backend='torch').to(device)
 
-            for epoch in range(args.epochs):
+            model: Final = torch.nn.Sequential(
+                scattering, torch.nn.Flatten(), classifier).to(device)
+
+            # recover last checkpoint
+            load_model_params(cppath, model)
+
+            criterion: Final = CrossEntropyLoss(reduction='sum')
+            optimizer: Final = torch.optim.SGD(
+                model.parameters(), lr=0.1, momentum=0.9, weight_decay=0.0005)
+            scheduler: Final = torch.optim.lr_scheduler.ExponentialLR(
+                optimizer, gamma=0.9)
+
+            for epoch in range(epochs):
                 print()
                 print(f"Training epoch {epoch}")
 
                 model.train()
-                for i, (data, target) in enumerate(train_loader):
+                for i, (data, target) in enumerate(loaders[0]):
                     data, target = data.to(device), target.to(device)
                     optimizer.zero_grad()
 
-                    coeffs = cast(torch.Tensor, scattering(data))
-                    coeffs = coeffs.view(coeffs.size(0), -1)
-                    predis = model(coeffs)
-                    predis = criterion.forward(predis, target)
-                    predis.backward()
+                    predis = model(data)
+                    output = criterion.forward(predis, target)
+                    output.backward()
                     optimizer.step()
 
-                    acc = metric(predis, target)
-                    print(f"Batch {i}: accuracy={acc:.2f} loss={predis:.6f}")
+                    # acc = metric.compute(predis, target).item()
+                    # print(f"Batch {i}: accuracy={acc:.2f} loss={predis:.6f}")
+                    print(f"Batch {i}: loss={output.sum():.6f}")
 
-                    w.add_scalar('loss/train', predis.item(), global_step=epoch)
-                    w.add_scalar('accuracy/train', acc, global_step=epoch)
+                    w.add_scalar('loss/train', output.item(),
+                                 global_step=epoch)
+                    #w.add_scalar('accuracy/train', acc, global_step=epoch)
 
                 model.eval()
-                for m in all_test_metrics:
+                for m in metrics:
                     m.reset()
                 with torch.no_grad():
-                    for data, target in test_loader:
+                    for data, target in loaders[1]:
                         data, target = data.to(device), target.to(device)
 
-                        coeffs = cast(torch.Tensor, scattering(data))
-                        coeffs = coeffs.view(coeffs.size(0), -1)
-                        predis = model(coeffs)
-
-                        for m in all_test_metrics:
+                        predis = model(data)
+                        for m in metrics:
                             m.update(predis, target)
 
-                loss = baseloss.compute()
-                acc = accuracy.compute()
+                loss = baseloss.compute().item()
+                acc = accuracy.compute().item()
                 print(f"Eval: accuracy={acc:.2f} loss={loss:.6f}")
 
-                w.add_scalar('loss/test', baseloss, global_step=epoch)
+                w.add_scalar('loss/test', loss, global_step=epoch)
                 w.add_scalar('accuracy/test', acc, global_step=epoch)
 
                 scheduler.step()
+                # TODO: save current checkpoint
+                save_model_params(cppath, model)
 
-            hparams = {"scat-coeff-order": order}
-            metrics = {"loss/test": 0}
-            w.add_hparams(hparamas_dict=hparams, metrics_dict=metrics)
+            hparams_as_dict = {"scat-coeff-order": order}
+            metrics_as_dict = {"loss/test": 0}
+            w.add_hparams(hparams_as_dict, metrics_as_dict)
 
             model.eval()
             with torch.no_grad():
                 confmat: Final = torchmetrics.ConfusionMatrix(
-                    num_classes=len(dataset.classes))
+                    num_classes=len(curet.classes))
                 confmat.to(device)
-                for data, target in test_loader:
+                for data, target in loaders[1]:
                     data, target = data.to(device), target.to(device)
-                    preds = model(scattering(data))
-                    confmat.update(preds, target)
+                    predis = model(data)
+                    confmat.update(predis, target)
 
                 mat = confmat.compute().cpu().numpy()
                 img = seaborn.heatmap(mat).get_figure()

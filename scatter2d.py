@@ -7,6 +7,7 @@ import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
 from kymatio import Scattering2D
+from kymatio.scattering2d.filter_bank import filter_bank
 from matplotlib import gridspec
 from torch.utils.data import DataLoader, Subset
 import torchvision
