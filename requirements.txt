@@ -1,0 +1,9 @@
+# required python packages
+kymatio
+matplotlib
+numpy
+pytorch-ignite
+seaborn
+torch>=1.13.0+cu117
+torchmetrics
+torchvision

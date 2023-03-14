@@ -16,7 +16,7 @@ from torchvision import transforms
 
 from curet.data import SimpleCuret, SAMPLES_PER_CLASS, curet_meta_table
 from curet.utils import CuretViewSubset, CuretClassSubset
-from scatnet import LinearSVM
+from models.scatnet import LinearSVM
 
 
 CURET_ROOT_PATH = Path(R"C:/data/curet/")

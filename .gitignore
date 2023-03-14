@@ -1,4 +1,10 @@
-/.checkpoints
-/out
-**/__pycache__
-**/runs
+# blacklist
+/**
+
+# whitelist
+!.gitignore
+!requirements.txt
+
+!/**.ipynb
+!/**.py
+!/**.tex

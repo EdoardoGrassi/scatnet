@@ -27,11 +27,24 @@ def plot_scaling_functions(filterbank: dict):
     plt.rc('text', usetex=True)
     plt.rc('font', family='serif')
 
+    # scales = filterbank['phi']['j']
+    # fig, axs = plt.subplots(ncols=scales)
+    # fig.suptitle(f"Scaling functions for scales $j$")
+    # for scale, ax in zip(range(scales), axs):
+    #     ft = filterbank['phi'][scale]
+    #     fw = np.fft.fftshift(np.fft.fft2(ft))
+    #     fw = np.abs(fw)
+
+    #     ax.imshow(fw, cmap="gray_r")
+    #     ax.set_title(f"$j$ = {scale}")
+    #     ax.xaxis.set_ticks([])
+    #     ax.yaxis.set_ticks([])
+
     scales = filterbank['phi']['j']
     fig, axs = plt.subplots(ncols=scales)
     fig.suptitle(f"Scaling functions for scales $j$")
     for scale, ax in zip(range(scales), axs):
-        ft = filterbank['phi'][scale]
+        ft = filterbank['phi']['levels'][scale]
         fw = np.fft.fftshift(np.fft.fft2(ft))
         fw = np.abs(fw)
 
@@ -40,7 +53,8 @@ def plot_scaling_functions(filterbank: dict):
         ax.xaxis.set_ticks([])
         ax.yaxis.set_ticks([])
 
-    fig.show()
+    # fig.show()
+    fig.savefig('resources/scaling.png')
 
 
 def plot_wavelet_functions(filterbank: dict):
@@ -93,11 +107,10 @@ if __name__ == "__main__":
     J = 4 #3
     L = 8
     fb: Final = filter_bank(M, M, J, L=L)
-
-    # print("keys:", fb['psi'][0].keys())
-    # print("psis:", len(fb["psi"]))
-    # print("psi.j:", fb['psi'][0]["j"])
-    # print("psi.theta:", fb['psi'][0]["theta"])
+    print("keys:", fb['psi'][0].keys())
+    print("psis:", len(fb['psi']))
+    print("psi.j:", fb['psi'][0]['j'])
+    print("psi.theta:", fb['psi'][0]['theta'])
 
     plot_scaling_functions(fb)
     plot_wavelet_functions(fb)
