@@ -1,10 +1,11 @@
 # blacklist
-/**
+/*
+__pycache__/
 
 # whitelist
 !.gitignore
+!README.md
 !requirements.txt
 
-!/**.ipynb
-!/**.py
-!/**.tex
+!models/
+!models/*.py

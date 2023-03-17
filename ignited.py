@@ -43,7 +43,7 @@ valid_loader = DataLoader(valid_dataset, batch_size=256, shuffle=False)
 test_img_data, _ = train_dataset[0]
 shape = test_img_data.squeeze().shape
 nclasses = len(train_dataset.classes)
-print(shape)
+print("Dataset input shape:", shape)
 
 model: Final = ScatNet2D(shape=shape, classes=nclasses).to(device)
 criterion: Final = CrossEntropyLoss(reduction='mean')
@@ -99,16 +99,15 @@ trainer.add_event_handler(Events.EPOCH_COMPLETED, handler)
 
 @trainer.on(Events.ITERATION_COMPLETED(every=100))
 def log_training_loss(engine: Engine):
-    print(
-        f"Epoch[{engine.state.epoch}], Iter[{engine.state.iteration}], Loss: {engine.state.output:.2f}")
+    print("Epoch[{}], Iter[{}], Loss: {:.2f}".format(
+        engine.state.epoch, engine.state.iteration, engine.state.output))
 
 
 @trainer.on(Events.EPOCH_COMPLETED)
 def log_training_results(trainer: Engine):
     train_evaluator.run(train_loader)
     metrics = train_evaluator.state.metrics
-    print(
-        f"Training Results - Epoch[{trainer.state.epoch}] Avg accuracy: {metrics['accuracy']:.2f} Avg loss: {metrics['loss']:.2f}")
+    print(f"Training Results - Epoch[{trainer.state.epoch}] Avg accuracy: {metrics['accuracy']:.2f} Avg loss: {metrics['loss']:.2f}")
 
 
 @trainer.on(Events.EPOCH_COMPLETED)
@@ -127,4 +126,4 @@ logger.attach_output_handler(
     output_transform=lambda loss: {"batch_loss": loss},
 )
 with logger:
-    trainer.run(train_loader, max_epochs=5)
+    trainer.run(train_loader, max_epochs=100)

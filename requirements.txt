@@ -4,6 +4,7 @@ matplotlib
 numpy
 pytorch-ignite
 seaborn
+tensorboardX
 torch>=1.13.0+cu117
 torchmetrics
 torchvision
