@@ -3,6 +3,9 @@ import torchvision
 import matplotlib.pyplot as plt
 from models.convnet import ConvNet2D
 
+from torchvision.datasets import Food101
+
+from pathlib import Path
 from typing import cast
 
 
@@ -23,16 +26,18 @@ def plot(tensor: torch.Tensor):
 
 
 def main():
-    FORMAT = ()
-    LABELS = 10
-    model = ConvNet2D(shape=FORMAT, classes=LABELS)
+    dataset = Food101(root='data', download=True)
+    test_img_data, _ = dataset[0]
+    model = ConvNet2D(shape=test_img_data.shape, classes=len(dataset.classes))
 
-    with open('.checkpoints/') as f:
-        model: ConvNet2D = torch.load(f)
+
+    #with open([x for x in Path('checkpoints/').iterdir()][0]) as f:
+
+    model: ConvNet2D = torch.load('checkpoints/checkpoint_4690.pt')
 
     # plot weights of convolutional layers
     layers = [0, 3, 6]
-    for name, module in model.layers.named_modules():
+    for name, module in model.features.named_modules():
         if name in layers:
             conv = cast(torch.nn.Conv2d, module)
             plot(conv.weight)

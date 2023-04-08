@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import contextlib
 from pathlib import Path
 from typing import Final
 
@@ -9,162 +10,107 @@ import seaborn
 import torch
 import torch.optim
 import torch.utils.data
-import torchmetrics
-import torchvision
+from ignite.contrib.handlers.tensorboard_logger import TensorboardLogger
+from ignite.engine import Engine, Events, create_supervised_evaluator, create_supervised_trainer
+from ignite.handlers import Checkpoint, DiskSaver
+from ignite.metrics import Accuracy, Loss
 from torch.nn import CrossEntropyLoss
 from torch.optim import SGD
 from torch.optim.lr_scheduler import ExponentialLR
 from torch.utils.data.dataloader import DataLoader
-from torchvision import transforms
+from torchvision.datasets import KMNIST, DTD
+import torchvision.transforms as transforms
 
 from models.convnet import ConvNet2D
 from models.scatnet import ScatNet2D
 
-CURET_ROOT_PATH = Path(R"C:/data/curet/")
-assert CURET_ROOT_PATH.is_dir()
-
-MODEL_SAVE_PATH = Path(R"./.checkpoints/")
-assert MODEL_SAVE_PATH.is_dir()
+device: Final = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def check_point_path(name: str) -> Path:
-    return MODEL_SAVE_PATH / name / "cp.pth"
+transform = transforms.Compose([
+    transforms.Grayscale(),
+    transforms.RandomCrop(200),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomVerticalFlip(),
+    transforms.ToTensor(),
+])
+
+#train_dataset = KMNIST(root='data', train=True, transform=transform, download=True)
+train_dataset = DTD(root='data', split='train', transform=transform, download=True)
+train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
+
+#valid_dataset = KMNIST(root='data', train=False, transform=transform, download=True)
+valid_dataset = DTD(root='data', split='val', transform=transform, download=True)
+valid_loader = DataLoader(valid_dataset, batch_size=256, shuffle=False)
+
+test_img_data, _ = train_dataset[0]
+shape = test_img_data.shape
+nclasses = len(train_dataset.classes)
+print("Dataset format:", shape, "classes:", nclasses, "samples:", len(train_dataset))
+print("Dataset splits:", "train =", len(train_dataset), "valid =", len(valid_dataset))
+
+model: Final = ScatNet2D(shape=shape, classes=nclasses).to(device)
+#model: Final = ConvNet2D(shape=shape, classes=nclasses).to(device)
+criterion: Final = CrossEntropyLoss(reduction='mean')
+optimizer: Final = SGD(model.parameters(), lr=0.1,
+                       momentum=0.9, weight_decay=0.0005)
+scheduler: Final = ExponentialLR(optimizer, gamma=0.9)
+
+metrics = {
+    "accuracy": Accuracy(),
+    "loss": Loss(criterion),
+}
 
 
-def load_model_params(path: Path, model: torch.nn.Module):
-    if path.exists():
-        print(f"Loading last checkpoint from {path}")
-        checkpoint: Final = torch.load(path)
-        model.load_state_dict(checkpoint)  # checkpoint['model_state_dict'])
-    else:
-        print("No checkpoint found")
+trainer: Final[Engine] = create_supervised_trainer(
+    model, optimizer=optimizer, loss_fn=criterion, device=device)
+train_evaluator: Final[Engine] = create_supervised_evaluator(
+    model, metrics=metrics, device=device)
+valid_evaluator: Final[Engine] = create_supervised_evaluator(
+    model, metrics=metrics, device=device)
 
 
-def save_model_params(path: Path, model: torch.nn.Module):
-    print(f"Saving last checkpoint to {path}")
-    torch.save(model.state_dict(), str(path))
+to_save = {'trainer': trainer, 'model': model,
+           'optimizer': optimizer, 'lr_scheduler': scheduler}
+saver = DiskSaver('checkpoints', create_dir=True, require_empty=False)
+handler = Checkpoint(to_save, saver)
+trainer.add_event_handler(Events.EPOCH_COMPLETED, handler)
 
 
-def main(batch_size: int, epochs: int):
+@trainer.on(Events.ITERATION_COMPLETED(every=10))
+def log_training_loss(engine: Engine):
+    print("Epoch[{}], Iter[{}], Loss: {:.2f}".format(
+        engine.state.epoch, engine.state.iteration, engine.state.output))
 
-    device: Final = torch.device(
-        'cuda' if torch.cuda.is_available() else 'cpu')
 
-    # normalize = transforms.Normalize(
-    #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ts: Final = transforms.Compose([
-        transforms.CenterCrop(200),
-        transforms.Grayscale(num_output_channels=1),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5], std=[0.5]),
-    ])
+@trainer.on(Events.EPOCH_COMPLETED)
+def log_training_results(trainer: Engine):
+    train_evaluator.run(train_loader)
+    metrics = train_evaluator.state.metrics
+    print("Train - Epoch[{}] Avg accuracy: {:.2f} Avg loss: {:.2f}".format(
+        trainer.state.epoch, metrics['accuracy'], metrics['loss']))
 
-    # TODO: use multiple workers after concurrency bug is fixed
-    workers, pinning = (4, True) if device.type == 'cuda' else (1, False)
-    print(f"Running on {device}")
 
-    dataset: Final = torchvision.datasets.KMNIST(root="data", download=True)
+@trainer.on(Events.EPOCH_COMPLETED)
+def log_validation_results(trainer: Engine):
+    valid_evaluator.run(valid_loader)
+    metrics = valid_evaluator.state.metrics
+    print("Valid - Epoch[{}] Avg accuracy: {:.2f} Avg loss: {:.2f}".format(
+        trainer.state.epoch, metrics['accuracy'], metrics['loss']))
 
-    # fixed generator seed for reproducible results
-    rng: Final = torch.Generator().manual_seed(0)
-    valid_set_size = int(0.8 * len(dataset))
-    train_set_size = len(dataset) - valid_set_size
-    datasets: Final = torch.utils.data.random_split(
-        dataset, [train_set_size, valid_set_size], generator=rng)
 
-    loaders: Final = [DataLoader(x, batch_size=batch_size, shuffle=shuffle,
-                                 num_workers=workers, pin_memory=pinning)
-                      for x, shuffle in zip(datasets, [True, False])]
-
-    print(f"Training for {epochs} epochs with batch size {batch_size}")
-
-    baseloss: Final = torchmetrics.HingeLoss(
-        task='multiclass', num_classes=len(dataset.classes)).to(device)
-    accuracy: Final = torchmetrics.Accuracy(
-        task='multiclass', num_classes=len(dataset.classes)).to(device)
-    metrics: Final[list[torchmetrics.Metric]] = [baseloss, accuracy]
-
-    test_img_data, _ = dataset[0]
-    #plt.imshow(test_img_data)
-    #plt.show()
-
-    models = {
-        "convnet": ConvNet2D(shape=test_img_data.size(),
-                             classes=len(dataset.classes)),
-        "scatnet": ScatNet2D(shape=test_img_data.size(),
-                             classes=len(dataset.classes)),
-    }
-    for name, model in models:
-        cppath: Final = check_point_path(name)
-
-        print(f"Running with model {name}")
-
-        # recover last checkpoint
-        load_model_params(cppath, model)
-
-        criterion: Final = CrossEntropyLoss(reduction='sum')
-        optimizer: Final = SGD(model.parameters(), lr=0.1,
-                               momentum=0.9, weight_decay=0.0005)
-        scheduler: Final = ExponentialLR(optimizer, gamma=0.9)
-
-        for epoch in range(epochs):
-            print()
-            print(f"Training epoch {epoch}")
-
-            model.train()
-            for i, (data, target) in enumerate(loaders[0]):
-                data, target = data.to(device), target.to(device)
-                optimizer.zero_grad()
-
-                predis = model(data)
-                output = criterion.forward(predis, target)
-                output.backward()
-                optimizer.step()
-
-                print(f"Batch {i}: loss={output.sum():.6f}")
-
-            model.eval()
-            for m in metrics:
-                m.reset()
-
-            with torch.no_grad():
-                for data, target in loaders[1]:
-                    data, target = data.to(device), target.to(device)
-
-                    predis = model(data)
-                    for m in metrics:
-                        m.update(predis, target)
-
-            loss = baseloss.compute().item()
-            acc = accuracy.compute().item()
-            print(f"Eval: accuracy={acc:.2f} loss={loss:.6f}")
-
-            scheduler.step()
-            # TODO: save current checkpoint
-            save_model_params(cppath, model)
-
-        model.eval()
-        with torch.no_grad():
-            confmat: Final = torchmetrics.ConfusionMatrix(
-                num_classes=len())
-            confmat.to(device)
-            for data, target in loaders[1]:
-                data, target = data.to(device), target.to(device)
-                predis = model(data)
-                confmat.update(predis, target)
-
-            mat = confmat.compute().cpu().numpy()
-            img = seaborn.heatmap(mat).savefig(f"resources/{name}/confmat.png")
+logger = TensorboardLogger(log_dir='logs/')
+logger.attach_output_handler(
+    trainer,
+    event_name=Events.ITERATION_COMPLETED(every=100),
+    tag="training",
+    output_transform=lambda loss: {"batch_loss": loss},
+)
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description='CURET scattering  + hybrid examples')
-    parser.add_argument('--batch-size', type=int, default=128)
-    parser.add_argument('--epochs', type=int, default=10,
-                        help='training epochs')
-    args: Final = parser.parse_args()
-
-    main(args.batch_size, args.epochs)
+    with contextlib.suppress(KeyboardInterrupt):
+        EPOCHS = 100
+        print(f"Training model {model} for {EPOCHS} epochs")
+        with logger:
+            trainer.run(train_loader, max_epochs=EPOCHS)

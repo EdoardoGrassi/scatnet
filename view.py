@@ -1,49 +1,55 @@
 import itertools
-import math
+import ssl
 from pathlib import Path
 from typing import Final
 
 import matplotlib.pyplot as plt
-import torchvision.transforms
-from torch.utils.data import DataLoader
+import torch
+import torchvision.transforms as transforms
+from torchvision.datasets import DTD, Food101
 
-from curet.data import Curet, SimpleCuret
+ssl._create_default_https_context = ssl._create_unverified_context
 
 
 def main():
-    USE_ONLY_CLASSES = list(range(1, 10 + 1))
-
-    root: Final = Path(R"C:/data/curet/")
-    root.mkdir(exist_ok=True)
-
-    ts: Final = torchvision.transforms.Compose([
-        torchvision.transforms.CenterCrop(200),
-        torchvision.transforms.Grayscale(num_output_channels=1),
-        torchvision.transforms.ToTensor(),
-        torchvision.transforms.Normalize(mean=[0.5], std=[0.5]),
+    transform: Final = transforms.Compose([
+        transforms.Grayscale(),
+        transforms.RandomCrop(200),
+        transforms.ToTensor(),
+        # torchvision.transforms.Normalize(mean=[0.5], std=[0.5]),
     ])
-    # curet: Final = Curet(root=root, classes=USE_ONLY_CLASSES, download=True, transform=ts)
-    curet: Final = SimpleCuret(root=root, transform=ts)
-    loader: Final = DataLoader(curet, batch_size=4, shuffle=True, num_workers=0)
-
-    # filter by view angle
-    MAX_H_ANGLE, R_ = math.radians(60), math.radians(-60)
-    # MAX_V_ANGLE = math.radians(60)
+    dataset: Final = DTD(root='data/', transform=transform, download=True)
+    print(dataset.extra_repr())
+    print("Classes:", dataset.classes)
 
     # preview some of the images
-    idx_to_class = { idx: cls for cls, idx in curet.class_to_idx.items() }
-    for images, labels in itertools.islice(loader, 1):
-        fig, axs = plt.subplots(ncols=len(images))
-        for image, label, ax in zip(images, labels, axs):
-            ax.set_title(f"{idx_to_class[label.item()]}")
-            ax.imshow(image.permute(1, 2, 0), cmap='gray')
+    idx_to_class = {idx: cls for cls, idx in dataset.class_to_idx.items()}
+    # for images, labels in dataset:
+    #     fig, axs = plt.subplots(ncols=len(images))
+    #     for image, label, ax in zip(images, labels, axs):
+    #         ax.set_title(f"{idx_to_class[label.item()]}")
+    #         #ax.imshow(image.permute(1, 2, 0), cmap='gray')
+    #         ax.imshow(image.permute(1, 2, 0))
 
-        plt.show()
+    #     plt.show()
 
-    print("Done")
+    rows, cols = 4, 4
+    fig, axs = plt.subplots(nrows=rows, ncols=cols)
+    for row, col in itertools.product(range(rows), range(cols)):
+        index = torch.randint(len(dataset), size=(1,)).item()
+        image, label = dataset[index]
+        ax = axs[row][col]
+        ax.set_title(f"{idx_to_class[label]}")
+        ax.axis("off")
+        # ax.imshow(image.permute(1, 2, 0), cmap='gray')
+        ax.imshow(image.permute(1, 2, 0).squeeze(), cmap='gray')
+
+    fig.show()
+    plt.show()
 
     # mean, std = mean_and_std(curet)
     # print(f"mean = {mean}, std = {std}")
+
 
 if __name__ == "__main__":
     main()
