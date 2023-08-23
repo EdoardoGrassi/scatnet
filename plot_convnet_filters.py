@@ -1,46 +1,43 @@
+import math
+
+import matplotlib.pyplot as plt
 import torch
 import torchvision
-import matplotlib.pyplot as plt
-from models.convnet import ConvNet2D
 
-from torchvision.datasets import Food101
-
-from pathlib import Path
-from typing import cast
+from models.convnet import ConvNet
 
 
-def plot(tensor: torch.Tensor):
+def plot_conv_filters(ax: plt.Axes, tensor: torch.Tensor):
+    # see https://stackoverflow.com/questions/55594969/how-to-visualise-filters-in-a-cnn-with-pytorch
     assert tensor is not None
+    print("Tensor shape", tensor.shape)
 
     n, c, w, h = tensor.shape
+    tensor = tensor.reshape(n * c, -1, w, h)
+    print("Tensor shape", tensor.shape)
 
-    if allkernels:
-        tensor = tensor.view(n*c, -1, w, h)
-    elif c != 3:
-        tensor = tensor[:, ch, :, :].unsqueeze(dim=1)
+    rows = math.floor(math.sqrt(tensor.shape[0]))
+    grid = torchvision.utils.make_grid(tensor, nrow=rows, normalize=True)
+    print("Grid shape", grid.shape)
 
-    rows = np.min((tensor.shape[0] // nrow + 1, 64))
-    grid = torchvision.utils.make_grid(tensor, nrow=nrow, normalize=True)
-    fig = plt.figure(figsize=(nrow, rows))
-    fig.imshow(grid.numpy().transpose((1, 2, 0)))
+    ax.imshow(grid.numpy().transpose((1, 2, 0)))
+    ax.axis('off')
 
 
 def main():
-    dataset = Food101(root='data', download=True)
-    test_img_data, _ = dataset[0]
-    model = ConvNet2D(shape=test_img_data.shape, classes=len(dataset.classes))
+    model = ConvNet(shape=(3, 200, 200), classes=10, classifier="mlp")
+    # model: ConvNet = torch.load('checkpoints/convnet/cp.pth')
 
-
-    #with open([x for x in Path('checkpoints/').iterdir()][0]) as f:
-
-    model: ConvNet2D = torch.load('checkpoints/checkpoint_4690.pt')
+    fig, axs = plt.subplots(ncols=3)
 
     # plot weights of convolutional layers
-    layers = [0, 3, 6]
-    for name, module in model.features.named_modules():
-        if name in layers:
-            conv = cast(torch.nn.Conv2d, module)
-            plot(conv.weight)
+    layers = [model.conv0, model.conv1, model.conv2]
+    for ax, layer in zip(axs, layers):
+        ax.set_title(layer._get_name())
+        plot_conv_filters(ax, layer.weight)
+
+    fig.savefig('report/images/convnet-filters.png')
+    plt.show()
 
 
 if __name__ == "__main__":

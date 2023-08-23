@@ -10,7 +10,7 @@ import seaborn
 import torch
 import torch.optim
 import torch.utils.data
-from ignite.contrib.handlers.tensorboard_logger import TensorboardLogger
+# from ignite.contrib.handlers.tensorboard_logger import TensorboardLogger
 from ignite.engine import Engine, Events, create_supervised_evaluator, create_supervised_trainer
 from ignite.handlers import Checkpoint, DiskSaver
 from ignite.metrics import Accuracy, Loss
@@ -25,7 +25,7 @@ import torchvision.transforms as transforms
 from kymatio.torch import Scattering2D
 from models.convnet import ConvNet2D
 from models.scatnet import ScatNet2D
-from datasets import KTHTIPS
+from datasets import KTH_TIPS_Grey
 
 device: Final = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -43,13 +43,13 @@ VALID_BATCH_SIZE = 256
 
 # train_dataset = KMNIST(root='data', train=True, transform=transform, download=True)
 # train_dataset = DTD(root='data', split='train', transform=transform, download=True)
-train_dataset = KTHTIPS(root='data', transform=transform, download=True)
+train_dataset = KTH_TIPS_Grey(root='data', transform=transform, download=True)
 train_loader = DataLoader(train_dataset, batch_size=TRAIN_BATCH_SIZE,
                           shuffle=True, pin_memory=True)
 
 # valid_dataset = KMNIST(root='data', train=False, transform=transform, download=True)
 # valid_dataset = DTD(root='data', split='val', transform=transform)
-valid_dataset = KTHTIPS(root='data', transform=transform)
+valid_dataset = KTH_TIPS_Grey(root='data', transform=transform)
 valid_loader = DataLoader(valid_dataset, batch_size=VALID_BATCH_SIZE,
                           shuffle=False, pin_memory=True)
 
@@ -141,13 +141,13 @@ def log_eval_results(trainer: Engine):
     # metrics = valid_
 
 
-logger = TensorboardLogger(log_dir='logs/')
-logger.attach_output_handler(
-    trainer,
-    event_name=Events.ITERATION_COMPLETED(every=100),
-    tag="training",
-    output_transform=lambda loss: {"batch_loss": loss},
-)
+# logger = TensorboardLogger(log_dir='logs/')
+# logger.attach_output_handler(
+#     trainer,
+#     event_name=Events.ITERATION_COMPLETED(every=100),
+#     tag="training",
+#     output_transform=lambda loss: {"batch_loss": loss},
+# )
 
 
 if __name__ == '__main__':

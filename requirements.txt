@@ -3,7 +3,8 @@ kymatio
 matplotlib
 numpy
 pytorch-ignite
-seaborn
+ray[tune]
+scikit-learn
 tensorboardX
 torch>=1.13.0+cu117
 torchmetrics
