@@ -1,11 +1,3 @@
-# blacklist
-/*
 __pycache__/
-
-# whitelist
-!.gitignore
-!README.md
-!requirements.txt
-
-!/*.py
-!models/*.py
+data/
+report/out/
