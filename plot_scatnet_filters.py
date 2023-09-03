@@ -1,6 +1,8 @@
 import colorsys
+import math
 from typing import Final
 
+import torch
 import torchvision
 import matplotlib.pyplot as plt
 import numpy as np
@@ -93,33 +95,49 @@ def plot_wavelet_functions(fig0: plt.Figure, fig1: plt.Figure, filters: list[dic
         # ax1.set_title(f"$j = {scale}$ \n $\\theta={angle}$")
 
 
-def plot_w_real(fig: plt.Figure, filters: list[dict]):
+def plot_s_func(ax: plt.Axes, filters: list[dict]):
     assert len(filters) > 0
 
-    real = []
+    scales = filters['j']
+    fs = []
+    for scale in range(scales):
+        ft = filters['levels'][scale]
+        fw = np.fft.fftshift(np.fft.fft2(ft))
+        fs.append(torch.Tensor(fw.real).unsqueeze(0))
+
+    grid = torchvision.utils.make_grid(fs, nrow=1, normalize=True, scale_each=True)
+    ax.axis('off')
+    ax.imshow(grid.numpy().transpose((1, 2, 0)), cmap="gray")
+
+
+def plot_w_real(ax: plt.Axes, filters: list[dict]):
+    assert len(filters) > 0
+
+    fs = []
     for filter in filters:
         ft = filter['levels'][0]
         fw = np.fft.fftshift(np.fft.fft2(ft))
-        real += fw.real
+        fs.append(torch.Tensor(fw.real).unsqueeze(0))
 
-    grid = torchvision.utils.make_grid(real, normalize=True)
-    fig.axis('off')
-    fig.imshow(grid.numpy().transpose((1, 2, 0)), cmap='gray')
+    angles = len(set([f['theta'] for f in filters]))
+    grid = torchvision.utils.make_grid(fs, nrow=angles, normalize=True, scale_each=True)
+    ax.axis('off')
+    ax.imshow(grid.numpy().transpose((1, 2, 0)), cmap='gray')
 
 
-def plot_w_imag(fig: plt.Figure, filters: list[dict]):
+def plot_w_imag(ax: plt.Axes, filters: list[dict]):
     assert len(filters) > 0
 
-    real = []
+    fs = []
     for filter in filters:
         ft = filter['levels'][0]
         fw = np.fft.fftshift(np.fft.fft2(ft))
-        real += fw.imag
+        fs.append(torch.Tensor(fw.imag).unsqueeze(0))
 
-    grid = torchvision.utils.make_grid(real, normalize=True)
-    fig.axis('off')
-    fig.imshow(grid.numpy().transpose((1, 2, 0)), cmap='gray')
-
+    angles = len(set([f['theta'] for f in filters]))
+    grid = torchvision.utils.make_grid(fs, nrow=angles, normalize=True, scale_each=True)
+    ax.axis('off')
+    ax.imshow(grid.numpy().transpose((1, 2, 0)), cmap='gray')
 
 
 def main():
@@ -148,6 +166,12 @@ def main():
     # fig1.savefig('report/images/scatnet-wavelet-filters.png')
     subfigs[1].subplots_adjust(wspace=0, hspace=0)
     #f.set_aspect('equal')
+
+
+    fig, axs = plt.subplots(ncols=3)
+    plot_s_func(axs[0], phis)
+    plot_w_real(axs[1], psis)
+    plot_w_imag(axs[2], psis)
 
     mainfig.savefig('report/images/scatnet-filters.png')
     plt.show()

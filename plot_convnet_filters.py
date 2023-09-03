@@ -25,8 +25,8 @@ def plot_conv_filters(ax: plt.Axes, tensor: torch.Tensor):
 
 
 def main():
-    model = ConvNet(shape=(3, 200, 200), classes=10, classifier="mlp")
-    # model: ConvNet = torch.load('checkpoints/convnet/cp.pth')
+    model = ConvNet(shape=(1, 200, 200), classes=10, classifier="mlp")
+    model.load_state_dict(torch.load('results/ConvNet.pth'))
 
     fig, axs = plt.subplots(ncols=3)
 
